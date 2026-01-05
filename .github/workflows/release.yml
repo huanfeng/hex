@@ -1,0 +1,313 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.artifact }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: windows-x86_64
+          - os: ubuntu-latest
+            artifact: linux-x86_64
+          - os: macos-latest
+            artifact: macos-aarch64
+          - os: macos-15-intel
+            artifact: macos-x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Sync Cargo.toml version
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python - << 'PY'
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          path = "Cargo.toml"
+          with open(path, "r", encoding="utf-8") as f:
+              content = f.read()
+          pattern = r'(?m)^(\s*version\s*=\s*)\"[^\"]+\"(\s*)$'
+          match = re.search(pattern, content)
+          if not match:
+              raise SystemExit("Cargo.toml version line not found.")
+          updated = re.sub(
+              pattern,
+              rf'\1"{version}"\2',
+              content,
+              count=1,
+          )
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(updated)
+          PY
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $zipName = "hex-$env:VERSION-${{ matrix.artifact }}.zip"
+          Compress-Archive -Path target\release\hex.exe -DestinationPath "dist\$zipName"
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar -C target/release -czf "dist/hex-${VERSION}-${{ matrix.artifact }}.tar.gz" hex
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.artifact }}
+          path: dist/*
+
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          files: release/**/*
+
+  publish-scoop:
+    needs: create-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-windows-x86_64
+          path: windows-release
+
+      - name: Prepare Scoop Metadata
+        id: scoop
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_PATH=$(ls windows-release/*.zip | head -n 1)
+          ZIP_NAME=$(basename "$ZIP_PATH")
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA256=$(sha256sum "$ZIP_PATH" | awk '{print $1}')
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Scoop Bucket
+        uses: actions/checkout@v4
+        with:
+          repository: huanfeng/scoop-bucket
+          token: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
+          path: scoop-bucket
+
+      - name: Update Scoop Manifest
+        shell: bash
+        env:
+          MANIFEST: scoop-bucket/bucket/hex.json
+          URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.scoop.outputs.zip_name }}
+          VERSION: ${{ steps.scoop.outputs.version }}
+          SHA256: ${{ steps.scoop.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          python - << 'PY'
+          import json
+          import os
+
+          manifest = os.environ["MANIFEST"]
+          url = os.environ["URL"]
+          version = os.environ["VERSION"]
+          sha256 = os.environ["SHA256"]
+
+          data = {
+              "version": version,
+              "architecture": {
+                  "64bit": {
+                      "url": url,
+                      "bin": ["hex.exe"],
+                      "hash": sha256,
+                  }
+              },
+              "homepage": "https://github.com/huanfeng/hex",
+              "license": "MIT",
+              "description": "Base converter and calculator",
+          }
+
+          if os.path.exists(manifest):
+              with open(manifest, "r", encoding="utf-8") as f:
+                  current = json.load(f)
+              current.update(data)
+              current.setdefault("architecture", {}).setdefault("64bit", {})
+              current["architecture"]["64bit"].update(data["architecture"]["64bit"])
+              current.setdefault("homepage", data["homepage"])
+              current.setdefault("license", data["license"])
+              current.setdefault("description", data["description"])
+              data = current
+
+          os.makedirs(os.path.dirname(manifest), exist_ok=True)
+          with open(manifest, "w", encoding="utf-8") as f:
+              json.dump(data, f, indent=2, ensure_ascii=True)
+              f.write("\n")
+          PY
+
+      - name: Commit and Push
+        shell: bash
+        env:
+          VERSION: ${{ steps.scoop.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd scoop-bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/hex.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Update hex to ${VERSION}"
+          git push
+
+  publish-homebrew:
+    needs: create-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-macos-*
+          path: macos-release
+          merge-multiple: true
+
+      - name: Prepare Homebrew Metadata
+        id: brew
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARM_PATH=$(ls macos-release/*macos-aarch64.tar.gz | head -n 1)
+          X64_PATH=$(ls macos-release/*macos-x86_64.tar.gz | head -n 1)
+          ARM_NAME=$(basename "$ARM_PATH")
+          X64_NAME=$(basename "$X64_PATH")
+          ARM_SHA256=$(sha256sum "$ARM_PATH" | awk '{print $1}')
+          X64_SHA256=$(sha256sum "$X64_PATH" | awk '{print $1}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "arm_name=$ARM_NAME" >> "$GITHUB_OUTPUT"
+          echo "x64_name=$X64_NAME" >> "$GITHUB_OUTPUT"
+          echo "arm_sha256=$ARM_SHA256" >> "$GITHUB_OUTPUT"
+          echo "x64_sha256=$X64_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Homebrew Tap
+        uses: actions/checkout@v4
+        with:
+          repository: huanfeng/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Homebrew Formula
+        shell: bash
+        env:
+          VERSION: ${{ steps.brew.outputs.version }}
+          ARM_NAME: ${{ steps.brew.outputs.arm_name }}
+          X64_NAME: ${{ steps.brew.outputs.x64_name }}
+          ARM_SHA256: ${{ steps.brew.outputs.arm_sha256 }}
+          X64_SHA256: ${{ steps.brew.outputs.x64_sha256 }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python - << 'PY'
+          import os
+
+          version = os.environ["VERSION"]
+          arm_name = os.environ["ARM_NAME"]
+          x64_name = os.environ["X64_NAME"]
+          arm_sha256 = os.environ["ARM_SHA256"]
+          x64_sha256 = os.environ["X64_SHA256"]
+          repo = os.environ["REPO"]
+
+          formula = f'''class Hex < Formula
+            desc "Base converter and calculator"
+            homepage "https://github.com/huanfeng/hex"
+            version "{version}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/{repo}/releases/download/v{version}/{arm_name}"
+                sha256 "{arm_sha256}"
+              else
+                url "https://github.com/{repo}/releases/download/v{version}/{x64_name}"
+                sha256 "{x64_sha256}"
+              end
+            end
+
+            def install
+              bin.install "hex"
+            end
+          end
+          '''
+
+          path = "homebrew-tap/Formula/hex.rb"
+          os.makedirs(os.path.dirname(path), exist_ok=True)
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(formula)
+          PY
+
+      - name: Commit and Push
+        shell: bash
+        env:
+          VERSION: ${{ steps.brew.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/hex.rb
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Update hex to ${VERSION}"
+          git push
