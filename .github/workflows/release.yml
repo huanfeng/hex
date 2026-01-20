@@ -221,6 +221,12 @@ jobs:
           path: macos-release
           merge-multiple: true
 
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-x86_64
+          path: linux-release
+
       - name: Prepare Homebrew Metadata
         id: brew
         shell: bash
@@ -229,15 +235,20 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           ARM_PATH=$(ls macos-release/*macos-aarch64.tar.gz | head -n 1)
           X64_PATH=$(ls macos-release/*macos-x86_64.tar.gz | head -n 1)
+          LINUX_PATH=$(ls linux-release/*linux-x86_64.tar.gz | head -n 1)
           ARM_NAME=$(basename "$ARM_PATH")
           X64_NAME=$(basename "$X64_PATH")
+          LINUX_NAME=$(basename "$LINUX_PATH")
           ARM_SHA256=$(sha256sum "$ARM_PATH" | awk '{print $1}')
           X64_SHA256=$(sha256sum "$X64_PATH" | awk '{print $1}')
+          LINUX_SHA256=$(sha256sum "$LINUX_PATH" | awk '{print $1}')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "arm_name=$ARM_NAME" >> "$GITHUB_OUTPUT"
           echo "x64_name=$X64_NAME" >> "$GITHUB_OUTPUT"
+          echo "linux_name=$LINUX_NAME" >> "$GITHUB_OUTPUT"
           echo "arm_sha256=$ARM_SHA256" >> "$GITHUB_OUTPUT"
           echo "x64_sha256=$X64_SHA256" >> "$GITHUB_OUTPUT"
+          echo "linux_sha256=$LINUX_SHA256" >> "$GITHUB_OUTPUT"
 
       - name: Checkout Homebrew Tap
         uses: actions/checkout@v4
@@ -252,8 +263,10 @@ jobs:
           VERSION: ${{ steps.brew.outputs.version }}
           ARM_NAME: ${{ steps.brew.outputs.arm_name }}
           X64_NAME: ${{ steps.brew.outputs.x64_name }}
+          LINUX_NAME: ${{ steps.brew.outputs.linux_name }}
           ARM_SHA256: ${{ steps.brew.outputs.arm_sha256 }}
           X64_SHA256: ${{ steps.brew.outputs.x64_sha256 }}
+          LINUX_SHA256: ${{ steps.brew.outputs.linux_sha256 }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -263,8 +276,10 @@ jobs:
           version = os.environ["VERSION"]
           arm_name = os.environ["ARM_NAME"]
           x64_name = os.environ["X64_NAME"]
+          linux_name = os.environ["LINUX_NAME"]
           arm_sha256 = os.environ["ARM_SHA256"]
           x64_sha256 = os.environ["X64_SHA256"]
+          linux_sha256 = os.environ["LINUX_SHA256"]
           repo = os.environ["REPO"]
 
           formula = f'''class Hex < Formula
@@ -283,8 +298,17 @@ jobs:
               end
             end
 
+            on_linux do
+              url "https://github.com/{repo}/releases/download/v{version}/{linux_name}"
+              sha256 "{linux_sha256}"
+            end
+
             def install
               bin.install "hex"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{{bin}}/hex --version")
             end
           end
           '''
