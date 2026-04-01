@@ -13,6 +13,22 @@ A fast, cross-platform base converter and expression calculator written in Rust.
 
 ## Install
 
+### Scoop (Windows)
+
+```powershell
+scoop bucket add huanfeng https://github.com/huanfeng/scoop-bucket
+scoop install hex
+```
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap huanfeng/tap
+brew install hex
+```
+
+### From source
+
 ```bash
 cargo build --release
 ```

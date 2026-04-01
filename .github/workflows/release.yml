@@ -99,7 +99,6 @@ jobs:
   create-release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -112,107 +111,75 @@ jobs:
           name: Release ${{ github.ref_name }}
           files: release/**/*
 
-  publish-scoop:
+  notify-scoop-bucket:
     needs: create-release
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: dist-windows-x86_64
-          path: windows-release
+          sparse-checkout: .github/scoop.json
+          sparse-checkout-cone-mode: false
 
-      - name: Prepare Scoop Metadata
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Read scoop metadata
         id: scoop
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_PATH=$(ls windows-release/*.zip | head -n 1)
-          ZIP_NAME=$(basename "$ZIP_PATH")
-          VERSION="${GITHUB_REF_NAME#v}"
-          SHA256=$(sha256sum "$ZIP_PATH" | awk '{print $1}')
-          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "name=$(jq -r '.name' .github/scoop.json)" >> "$GITHUB_OUTPUT"
+          echo "bin=$(jq -r '.bin' .github/scoop.json)" >> "$GITHUB_OUTPUT"
+          echo "description=$(jq -r '.description' .github/scoop.json)" >> "$GITHUB_OUTPUT"
+          echo "homepage=$(jq -r '.homepage' .github/scoop.json)" >> "$GITHUB_OUTPUT"
+          echo "license=$(jq -r '.license' .github/scoop.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout Scoop Bucket
-        uses: actions/checkout@v4
-        with:
-          repository: huanfeng/scoop-bucket
-          token: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
-          path: scoop-bucket
-
-      - name: Update Scoop Manifest
-        shell: bash
+      - name: Send repository_dispatch to scoop-bucket
         env:
-          MANIFEST: scoop-bucket/bucket/hex.json
-          URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.scoop.outputs.zip_name }}
-          VERSION: ${{ steps.scoop.outputs.version }}
-          SHA256: ${{ steps.scoop.outputs.sha256 }}
+          APP: ${{ steps.scoop.outputs.name }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BIN: ${{ steps.scoop.outputs.bin }}
+          DESCRIPTION: ${{ steps.scoop.outputs.description }}
+          HOMEPAGE: ${{ steps.scoop.outputs.homepage }}
+          LICENSE: ${{ steps.scoop.outputs.license }}
         run: |
           set -euo pipefail
-          python - << 'PY'
-          import json
-          import os
-
-          manifest = os.environ["MANIFEST"]
-          url = os.environ["URL"]
-          version = os.environ["VERSION"]
-          sha256 = os.environ["SHA256"]
-
-          data = {
-              "version": version,
-              "architecture": {
-                  "64bit": {
-                      "url": url,
-                      "bin": ["hex.exe"],
-                      "hash": sha256,
-                  }
-              },
-              "homepage": "https://github.com/huanfeng/hex",
-              "license": "MIT",
-              "description": "Base converter and calculator",
-          }
-
-          if os.path.exists(manifest):
-              with open(manifest, "r", encoding="utf-8") as f:
-                  current = json.load(f)
-              current.update(data)
-              current.setdefault("architecture", {}).setdefault("64bit", {})
-              current["architecture"]["64bit"].update(data["architecture"]["64bit"])
-              current.setdefault("homepage", data["homepage"])
-              current.setdefault("license", data["license"])
-              current.setdefault("description", data["description"])
-              data = current
-
-          os.makedirs(os.path.dirname(manifest), exist_ok=True)
-          with open(manifest, "w", encoding="utf-8") as f:
-              json.dump(data, f, indent=2, ensure_ascii=True)
-              f.write("\n")
-          PY
-
-      - name: Commit and Push
-        shell: bash
-        env:
-          VERSION: ${{ steps.scoop.outputs.version }}
-        run: |
-          set -euo pipefail
-          cd scoop-bucket
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add bucket/hex.json
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
-          git commit -m "Update hex to ${VERSION}"
-          git push
+          ASSET_NAME="${APP}-${VERSION}-windows-x86_64.zip"
+          curl -fsSL -X POST \
+            -H "Authorization: token ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/huanfeng/scoop-bucket/dispatches" \
+            -d "$(jq -n \
+              --arg event_type "update-scoop-manifest" \
+              --arg app "$APP" \
+              --arg repo "$REPO" \
+              --arg version "$VERSION" \
+              --arg asset_name "$ASSET_NAME" \
+              --arg bin "$BIN" \
+              --arg description "$DESCRIPTION" \
+              --arg homepage "$HOMEPAGE" \
+              --arg license "$LICENSE" \
+              '{
+                event_type: $event_type,
+                client_payload: {
+                  app: $app,
+                  repo: $repo,
+                  version: $version,
+                  asset_name: $asset_name,
+                  bin: $bin,
+                  description: $description,
+                  homepage: $homepage,
+                  license: $license
+                }
+              }'
+            )"
 
   publish-homebrew:
     needs: create-release
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download macOS artifacts
         uses: actions/download-artifact@v4

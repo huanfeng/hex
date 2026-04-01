@@ -121,11 +121,11 @@ fn msg(lang: Lang, msg: Msg) -> String {
 fn main() {
     let (cli, expression, lang) = split_args();
 
-    if let Some(raw) = &cli.lang {
-        if parse_lang_value(raw).is_none() {
-            eprintln!("{}", msg(lang, Msg::InvalidLang(raw.to_string())));
-            std::process::exit(2);
-        }
+    if let Some(raw) = &cli.lang
+        && parse_lang_value(raw).is_none()
+    {
+        eprintln!("{}", msg(lang, Msg::InvalidLang(raw.to_string())));
+        std::process::exit(2);
     }
 
     let mut display = DisplayConfig::from_flags(
@@ -289,14 +289,14 @@ fn split_args() -> (Cli, Vec<String>, Lang) {
         if is_flag(&arg) {
             let needs_value = needs_optional_value(&arg);
             flag_args.push(arg);
-            if needs_value {
-                if let Some(value) = iter.next() {
-                    if is_toggle_value(&value) {
-                        flag_args.push(value);
-                        continue;
-                    }
-                    expr_args.push(value);
+            if needs_value
+                && let Some(value) = iter.next()
+            {
+                if is_toggle_value(&value) {
+                    flag_args.push(value);
+                    continue;
                 }
+                expr_args.push(value);
             }
         } else {
             expr_args.push(arg);
@@ -363,17 +363,16 @@ fn resolve_lang(args: &[String]) -> Lang {
 fn extract_lang_arg(args: &[String]) -> Option<Lang> {
     let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
-        if let Some(value) = arg.strip_prefix("--lang=") {
-            if let Some(lang) = parse_lang_value(value) {
-                return Some(lang);
-            }
+        if let Some(value) = arg.strip_prefix("--lang=")
+            && let Some(lang) = parse_lang_value(value)
+        {
+            return Some(lang);
         }
-        if arg == "--lang" {
-            if let Some(value) = iter.next() {
-                if let Some(lang) = parse_lang_value(value) {
-                    return Some(lang);
-                }
-            }
+        if arg == "--lang"
+            && let Some(value) = iter.next()
+            && let Some(lang) = parse_lang_value(value)
+        {
+            return Some(lang);
         }
     }
     None
@@ -390,17 +389,17 @@ fn parse_lang_value(value: &str) -> Option<Lang> {
 
 fn detect_system_lang() -> Lang {
     #[cfg(windows)]
-    if let Some(locale) = detect_windows_locale() {
-        if is_zh_tag(&locale) {
-            return Lang::Zh;
-        }
+    if let Some(locale) = detect_windows_locale()
+        && is_zh_tag(&locale)
+    {
+        return Lang::Zh;
     }
     let vars = ["LC_ALL", "LC_MESSAGES", "LANG"];
     for key in vars {
-        if let Ok(value) = std::env::var(key) {
-            if is_zh_tag(&value) {
-                return Lang::Zh;
-            }
+        if let Ok(value) = std::env::var(key)
+            && is_zh_tag(&value)
+        {
+            return Lang::Zh;
         }
     }
     Lang::En
@@ -549,11 +548,7 @@ struct ParserState<'a> {
 impl ParserState<'_> {
     fn parse_expr(&mut self, min_prec: u8) -> Result<i128, String> {
         let mut lhs = self.parse_prefix()?;
-        loop {
-            let op = match self.peek_infix() {
-                Some(op) => op,
-                None => break,
-            };
+        while let Some(op) = self.peek_infix() {
             let (prec, assoc_left) = infix_precedence(op);
             if prec < min_prec {
                 break;
@@ -898,7 +893,7 @@ fn format_bin(value: i128) -> String {
 }
 
 fn format_char(value: i128) -> Option<char> {
-    if value < 0 || value > 255 {
+    if !(0..=255).contains(&value) {
         return None;
     }
     let ch = value as u8 as char;
@@ -1159,10 +1154,10 @@ fn print_value(value: i128, display: &DisplayConfig, lang: Lang) {
     if display.show_bin() {
         parts.push(format!("Bin: {}", format_bin(value)));
     }
-    if display.show_char() {
-        if let Some(ch) = format_char(value) {
-            parts.push(format!("Char: {ch}"));
-        }
+    if display.show_char()
+        && let Some(ch) = format_char(value)
+    {
+        parts.push(format!("Char: {ch}"));
     }
     if parts.is_empty() {
         println!("{}", msg(lang, Msg::NoOutput));

@@ -1,0 +1,7 @@
+{
+  "name": "hex",
+  "bin": "hex.exe",
+  "description": "Base converter and calculator",
+  "homepage": "https://github.com/huanfeng/hex",
+  "license": "MIT"
+}
